@@ -9,7 +9,7 @@ This repository is designed to be developed independently from the QGIS applicat
 ## Authorship
 
 - Project Manager: Nicolas Flipo
-- Main Developper: Simone Mazzarelli
+- Main Developer: Simone Mazzarelli
 - Other contributors to come: Tristan Bourgeois, Nicolas Gallois, ...
 - Proto implementation as CaWaQS-ViZ backend: Lise-Marie Girod
 
