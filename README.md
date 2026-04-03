@@ -12,8 +12,8 @@ The project metadata lists the named contributors below as authors; their curren
 
 - Project Manager: Nicolas Flipo
 - Main Developer: Simone Mazzarelli
-- Other contributors to come: Tristan Bourgeois, Nicolas Gallois, ...
-- Proto implementation as CaWaQS-ViZ backend: Lise-Marie Girod
+- - Proto implementation as CaWaQS-ViZ backend: Lise-Marie Girod
+- Other contributors to come: Tristan Bourgeois, Nicolas Gallois, Fulvia Baratelli, Pierre Guillou, Fabien Ors, Mariam Taki
 
 ## Layout
 
