@@ -3,8 +3,8 @@ requires = ["hatchling>=1.27"]
 build-backend = "hatchling.build"
 
 [project]
-name = "hydrological-twin-alpha-series"
-version = "0.1.0-alpha"
+name = "HydrologicalTwinAlphaSeries"
+version = "0.alpha.01"
 description = "Standalone backend package for the CaWaQS alpha-series hydrological twin workflows."
 readme = "README.md"
 requires-python = ">=3.10"
