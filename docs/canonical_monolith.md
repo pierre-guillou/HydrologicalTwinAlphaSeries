@@ -54,13 +54,12 @@ These methods **delegate** to `services/` and `domain/` — they contain no heav
 `HydrologicalTwin` enforces an explicit lifecycle via an internal state machine:
 
 ```
-EMPTY → CONFIGURED → LOADED → READY
+EMPTY → CONFIGURED → LOADED
 ```
 
 - **EMPTY**: Instance created, no configuration.
 - **CONFIGURED**: Configuration attached, no data loaded.
-- **LOADED**: Compartments registered, data accessible.
-- **READY**: Alias for LOADED — all operations available.
+- **LOADED**: Compartments registered, data accessible. All operations available.
 
 Invalid call sequences raise `InvalidStateError`.
 

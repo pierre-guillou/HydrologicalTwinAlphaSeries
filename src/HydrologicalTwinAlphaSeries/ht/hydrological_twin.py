@@ -51,7 +51,7 @@ class HydrologicalTwin(HTPersistenceMixin):
 
     Lifecycle states::
 
-        EMPTY → CONFIGURED → LOADED (≡ READY)
+        EMPTY → CONFIGURED → LOADED
 
     Macro-methods (public API)::
 
