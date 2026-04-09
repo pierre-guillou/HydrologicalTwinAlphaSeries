@@ -65,7 +65,7 @@ def test_render_simobs_interactive_requires_output_file():
         )
 
 
-def test_plot_hydrological_regime_accepts_legacy_interractiv_keyword(tmp_path, monkeypatch):
+def test_plot_hydrological_regime_accepts_legacy_interactive_keyword(tmp_path, monkeypatch):
     def _fail_show(self):
         raise AssertionError("Plotly show() must not be called")
 
