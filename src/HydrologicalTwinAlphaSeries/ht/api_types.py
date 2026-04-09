@@ -1,9 +1,50 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+import enum
+from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
 import numpy as np
+
+# ---------------------------------------------------------------------------
+# Internal state model
+# ---------------------------------------------------------------------------
+
+class TwinState(enum.Enum):
+    """Lifecycle states for :class:`HydrologicalTwin`.
+
+    Allowed transitions::
+
+        EMPTY → CONFIGURED → LOADED
+                              (LOADED ≡ READY)
+    """
+
+    EMPTY = "EMPTY"
+    CONFIGURED = "CONFIGURED"
+    LOADED = "LOADED"
+
+
+#: Allowed forward transitions: *from_state* → set of *to_states*.
+ALLOWED_TRANSITIONS: Dict[TwinState, frozenset] = {
+    TwinState.EMPTY: frozenset({TwinState.CONFIGURED}),
+    TwinState.CONFIGURED: frozenset({TwinState.LOADED}),
+    TwinState.LOADED: frozenset(),  # terminal
+}
+
+#: Minimum state required for each macro-method.
+MINIMUM_STATE: Dict[str, TwinState] = {
+    "configure": TwinState.EMPTY,
+    "load": TwinState.CONFIGURED,
+    "describe": TwinState.LOADED,
+    "extract": TwinState.LOADED,
+    "transform": TwinState.LOADED,
+    "render": TwinState.LOADED,
+    "export": TwinState.LOADED,
+}
+
+
+class InvalidStateError(Exception):
+    """Raised when a macro-method is called in an invalid lifecycle state."""
 
 
 @dataclass
@@ -101,3 +142,42 @@ class ObservationInfo:
     layer_ids: List[int]
     geometries: list
     mesh_ids: List[int]
+
+
+# ---------------------------------------------------------------------------
+# Macro-method result types
+# ---------------------------------------------------------------------------
+
+@dataclass
+class TwinDescription:
+    """Result of :meth:`HydrologicalTwin.describe`.
+
+    Aggregates all metadata about the twin's current state.
+    """
+
+    state: str
+    n_compartments: int
+    compartments: List[CompartmentInfo]
+    metadata: Dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
+class RenderResult:
+    """Result of :meth:`HydrologicalTwin.render`.
+
+    Carries paths to rendered artefacts produced by the rendering services.
+    """
+
+    artefacts: List[str] = field(default_factory=list)
+    meta: Optional[Dict[str, Any]] = None
+
+
+@dataclass
+class ExportResult:
+    """Result of :meth:`HydrologicalTwin.export`.
+
+    Carries paths or bytes of exported data.
+    """
+
+    path: Optional[str] = None
+    meta: Optional[Dict[str, Any]] = None

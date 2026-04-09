@@ -63,6 +63,7 @@ The backend is intended to be integrated as an external dependency (e.g. Git sub
 
 * `docs`
   Technical notes and backend-oriented documentation
+  (see [canonical_monolith.md](docs/canonical_monolith.md) for the target architecture)
 
 ---
 
