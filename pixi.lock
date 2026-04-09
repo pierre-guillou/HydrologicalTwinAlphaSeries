@@ -229,9 +229,9 @@ packages:
   - ruff ; extra == 'dev'
   requires_python: '>=3.10'
 - pypi: ./
-  name: hydrological-twin-alpha-series
-  version: 0.1.0a0
-  sha256: 38c66b202c0b7e0fee9b540fad29a896e48107eea1fc9dd3c039d571c2d42bc7
+  name: hydrologicaltwinalphaseries
+  version: 0a1
+  sha256: a761bc3a127f11e5d8b4f4da1baec3579d2f853a4cfd84a7b45353d68b1fc94f
   requires_dist:
   - geopandas>=1.1.2,<2
   - matplotlib>=3.10.8,<4
