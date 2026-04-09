@@ -9,26 +9,29 @@ import geopandas as gpd
 import numpy as np
 import pandas as pd
 
-# NOTE:
-# These imports assume that this `ht` subpackage lives inside the existing
-# `cawaqsviz` package, *at the same level* as Compartment / Mesh /
-# Observations / Extraction / Manage.
-from HydrologicalTwinAlphaSeries.Compartment import Compartment
 from HydrologicalTwinAlphaSeries.config import ConfigGeometry, ConfigProject
 from HydrologicalTwinAlphaSeries.config.constants import obs_config
-from HydrologicalTwinAlphaSeries.Manage import Manage
-from HydrologicalTwinAlphaSeries.Renderer import Renderer
+from HydrologicalTwinAlphaSeries.domain.Compartment import Compartment
+from HydrologicalTwinAlphaSeries.services.Manage import Manage
+from HydrologicalTwinAlphaSeries.services.Renderer import Renderer
+from HydrologicalTwinAlphaSeries.services.Vec_Operator import Comparator, Extractor, Operator
 from HydrologicalTwinAlphaSeries.tools.spatial_utils import verify_crs_match
-from HydrologicalTwinAlphaSeries.Vec_Operator import Comparator, Extractor, Operator
 
 from .api_types import (
+    ALLOWED_TRANSITIONS,
+    MINIMUM_STATE,
     CompartmentInfo,
+    ExportResult,
     ExtractValuesResponse,
+    InvalidStateError,
     LayerInfo,
     ObservationInfo,
     ObservationsResponse,
+    RenderResult,
     SpatialAverageResponse,
     TemporalOpResponse,
+    TwinDescription,
+    TwinState,
 )
 from .persistence import HTPersistenceMixin
 
@@ -38,6 +41,10 @@ class HydrologicalTwin(HTPersistenceMixin):
 
     This class is the ONLY backend entry point that the QGIS interface should use.
 
+    ``Compartment`` is the **primary domain aggregate**: all public operations
+    flow through compartments, never through low-level artifacts (meshes,
+    observations, extraction points) directly.
+
     Architecture follows the six-layer HydroTwin ontology:
         L1  Model Layer         — compartment & mesh metadata
         L2  Data Layer          — observations, simulations I/O
@@ -45,14 +52,23 @@ class HydrologicalTwin(HTPersistenceMixin):
         L4  Analysis Layer      — temporal & spatial transformations, extraction
         L5  Cartographic Layer  — visualization & spatial representation
         L6  Git-Synchronized Registry — identity, provenance, versioning
+
+    Lifecycle states::
+
+        EMPTY → CONFIGURED → LOADED → READY
+
+    Macro-methods (public API, ≤ 8)::
+
+        configure, load, register_compartment, describe,
+        extract, transform, render, export
     """
 
     def __init__(
         self,
-        config_geom: ConfigGeometry,
-        config_proj: ConfigProject,
-        out_caw_directory: str,
-        obs_directory: str,
+        config_geom: Optional[ConfigGeometry] = None,
+        config_proj: Optional[ConfigProject] = None,
+        out_caw_directory: Optional[str] = None,
+        obs_directory: Optional[str] = None,
         temp_directory: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None,
     ) -> None:
@@ -60,13 +76,15 @@ class HydrologicalTwin(HTPersistenceMixin):
 
         Parameters
         ----------
-        config_geom : ConfigGeometry
+        config_geom : ConfigGeometry, optional
             Geometry / resolution configuration (as already used by Compartment).
-        config_proj : ConfigProject
-            Project-level configuration (includes `regime`).
-        out_caw_directory : str
+            When provided together with *config_proj*, the twin starts in
+            ``CONFIGURED`` state.
+        config_proj : ConfigProject, optional
+            Project-level configuration (includes ``regime``).
+        out_caw_directory : str, optional
             Root directory containing CaWaQS outputs.
-        obs_directory : str
+        obs_directory : str, optional
             Root directory containing observations (.dat) files.
         temp_directory : Optional[str]
             Directory to store temporary numpy/CSV/post-processing files.
@@ -74,11 +92,14 @@ class HydrologicalTwin(HTPersistenceMixin):
         metadata : Optional[dict]
             Optional metadata dictionary attached to the twin.
         """
-        self.config_geom = config_geom
-        self.config_proj = config_proj
-        self.out_caw_directory = out_caw_directory
-        self.obs_directory = obs_directory
-        self.temp_directory = temp_directory or out_caw_directory
+        # Internal state
+        self._state: TwinState = TwinState.EMPTY
+
+        self.config_geom: Optional[ConfigGeometry] = None
+        self.config_proj: Optional[ConfigProject] = None
+        self.out_caw_directory: Optional[str] = None
+        self.obs_directory: Optional[str] = None
+        self.temp_directory: Optional[str] = None
 
         self.metadata: Dict[str, Any] = metadata or {}
 
@@ -89,6 +110,226 @@ class HydrologicalTwin(HTPersistenceMixin):
         self.temporal = Manage.Temporal()
         self.spatial = Manage.Spatial()
         self.budget = Manage.Budget()
+
+        # Auto-configure if full config provided at construction time
+        if config_geom is not None and config_proj is not None:
+            self.configure(
+                config_geom=config_geom,
+                config_proj=config_proj,
+                out_caw_directory=out_caw_directory or "",
+                obs_directory=obs_directory or "",
+                temp_directory=temp_directory,
+            )
+
+    # ------------------------------------------------------------------
+    # State helpers
+    # ------------------------------------------------------------------
+
+    @property
+    def state(self) -> TwinState:
+        """Current lifecycle state."""
+        return self._state
+
+    def _transition_to(self, target: TwinState) -> None:
+        """Advance to *target* state, raising on illegal transitions."""
+        if target not in ALLOWED_TRANSITIONS.get(self._state, frozenset()):
+            raise InvalidStateError(
+                f"Cannot transition from {self._state.value} to {target.value}. "
+                f"Allowed: {sorted(s.value for s in ALLOWED_TRANSITIONS[self._state])}"
+            )
+        self._state = target
+
+    def _require_state(self, method_name: str) -> None:
+        """Raise :class:`InvalidStateError` if *method_name* is not callable yet."""
+        minimum = MINIMUM_STATE.get(method_name)
+        if minimum is None:
+            return
+        state_order = [TwinState.EMPTY, TwinState.CONFIGURED, TwinState.LOADED, TwinState.READY]
+        if state_order.index(self._state) < state_order.index(minimum):
+            raise InvalidStateError(
+                f"'{method_name}' requires state {minimum.value} or later, "
+                f"but current state is {self._state.value}."
+            )
+
+    # ╔════════════════════════════════════════════════════════════════╗
+    # ║  MACRO-METHODS — canonical public API                        ║
+    # ╚════════════════════════════════════════════════════════════════╝
+
+    def configure(
+        self,
+        config_geom: ConfigGeometry,
+        config_proj: ConfigProject,
+        out_caw_directory: str,
+        obs_directory: str,
+        temp_directory: Optional[str] = None,
+    ) -> None:
+        """Attach project and geometry configuration.
+
+        Transitions: EMPTY → CONFIGURED.
+        """
+        self._require_state("configure")
+        self.config_geom = config_geom
+        self.config_proj = config_proj
+        self.out_caw_directory = out_caw_directory
+        self.obs_directory = obs_directory
+        self.temp_directory = temp_directory or out_caw_directory
+        self._transition_to(TwinState.CONFIGURED)
+
+    def load(
+        self,
+        compartments: Optional[Dict[int, Compartment]] = None,
+        **kwargs: Any,
+    ) -> None:
+        """Register compartments and mesh data.
+
+        Transitions: CONFIGURED → LOADED.
+
+        Parameters
+        ----------
+        compartments : dict, optional
+            ``{id_compartment: Compartment}`` mapping.  When supplied the
+            compartments are stored directly.
+        """
+        self._require_state("load")
+        if compartments is not None:
+            self.compartments = compartments
+        self._transition_to(TwinState.LOADED)
+
+    def register_compartment(
+        self,
+        id_compartment: int,
+        compartment: Compartment,
+    ) -> None:
+        """Register a single compartment into the twin.
+
+        Can be called repeatedly to add compartments one at a time after
+        ``load()`` has been called.  Requires state LOADED or later.
+
+        Parameters
+        ----------
+        id_compartment : int
+            CaWaQS compartment identifier.
+        compartment : Compartment
+            Fully constructed Compartment aggregate.
+
+        Raises
+        ------
+        TypeError
+            If *compartment* is not a :class:`Compartment` instance.
+        """
+        self._require_state("register_compartment")
+        if not isinstance(compartment, Compartment):
+            raise TypeError(
+                f"Expected a Compartment instance, got {type(compartment).__name__}"
+            )
+        self.compartments[id_compartment] = compartment
+
+    def describe(self, **kwargs: Any) -> TwinDescription:
+        """Return a structured description of the twin.
+
+        Requires state LOADED.
+        """
+        self._require_state("describe")
+        return TwinDescription(
+            state=self._state.value,
+            n_compartments=len(self.compartments),
+            compartments=self.list_compartments(),
+            metadata=self.metadata,
+        )
+
+    def extract(
+        self,
+        id_compartment: int,
+        outtype: str,
+        param: str,
+        syear: int,
+        eyear: int,
+        **kwargs: Any,
+    ) -> ExtractValuesResponse:
+        """Extract simulation data (macro-method).
+
+        Delegates to :meth:`extract_values`.  Requires state LOADED.
+        """
+        self._require_state("extract")
+        return self.extract_values(
+            id_compartment=id_compartment,
+            outtype=outtype,
+            param=param,
+            syear=syear,
+            eyear=eyear,
+            **kwargs,
+        )
+
+    def transform(
+        self,
+        arr: np.ndarray,
+        dates: np.ndarray,
+        frequency: str,
+        agg_dimension: Union[str, float] = "mean",
+        **kwargs: Any,
+    ) -> TemporalOpResponse:
+        """Apply temporal aggregation (macro-method).
+
+        Delegates to :meth:`apply_temporal_operator`.  Requires state LOADED.
+        """
+        self._require_state("transform")
+        return self.apply_temporal_operator(
+            arr=arr,
+            dates=dates,
+            column_names=kwargs.pop("column_names", None),
+            agg_dimension=agg_dimension,
+            frequency=frequency,
+            **kwargs,
+        )
+
+    def render(self, kind: str = "budget", **kwargs: Any) -> RenderResult:
+        """Produce visualizations (macro-method).
+
+        Delegates to the appropriate render helper.  Requires state LOADED.
+
+        Parameters
+        ----------
+        kind : str
+            ``"budget"`` | ``"regime"`` | ``"sim_obs_pdf"`` | ``"sim_obs_interactive"``
+        """
+        self._require_state("render")
+        if kind == "budget":
+            self.render_budget_barplot(**kwargs)
+        elif kind == "regime":
+            self.render_hydrological_regime(**kwargs)
+        elif kind == "sim_obs_pdf":
+            self.render_sim_obs_pdf(**kwargs)
+        elif kind == "sim_obs_interactive":
+            self.render_sim_obs_interactive(**kwargs)
+        else:
+            raise ValueError(f"Unknown render kind: {kind!r}")
+        return RenderResult(meta={"kind": kind})
+
+    def export(
+        self,
+        path: Optional[str] = None,
+        fmt: str = "pickle",
+        **kwargs: Any,
+    ) -> ExportResult:
+        """Export data or twin snapshot to disk (macro-method).
+
+        Requires state LOADED.
+
+        Parameters
+        ----------
+        path : str, optional
+            Destination file/directory path.
+        fmt : str
+            ``"pickle"`` (default) — full twin snapshot via ``to_pickle``.
+        """
+        self._require_state("export")
+        if fmt == "pickle":
+            if path is None:
+                raise ValueError("'path' is required for pickle export.")
+            self.to_pickle(path)
+        else:
+            raise ValueError(f"Unknown export format: {fmt!r}")
+        return ExportResult(path=path, meta={"fmt": fmt})
 
     # ╔════════════════════════════════════════════════════════════════╗
     # ║  L1 — MODEL LAYER  (Compartment & Mesh metadata)             ║
