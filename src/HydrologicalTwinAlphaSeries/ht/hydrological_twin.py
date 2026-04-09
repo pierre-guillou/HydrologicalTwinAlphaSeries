@@ -1136,12 +1136,20 @@ class HydrologicalTwin(HTPersistenceMixin):
         var: str,
         units: str,
         savepath: str,
-        interractiv: bool = False,
+        interactive: bool = False,
         staticpng: bool = True,
         staticpdf: bool = True,
         years: str = None,
+        **kwargs: Any,
     ):
         """Render hydrological regime plots. Delegates to Renderer."""
+        legacy_interactive = kwargs.pop("interractiv", None)
+        if legacy_interactive is not None:
+            interactive = legacy_interactive
+        if kwargs:
+            unexpected = ", ".join(sorted(kwargs))
+            raise TypeError(f"Unexpected keyword arguments: {unexpected}")
+
         return Renderer.plot_hydrological_regime(
             data=data,
             obs_point_names=obs_point_names,
@@ -1149,7 +1157,7 @@ class HydrologicalTwin(HTPersistenceMixin):
             var=var,
             units=units,
             savepath=savepath,
-            interactive=interractiv,
+            interactive=interactive,
             staticpng=staticpng,
             staticpdf=staticpdf,
             years=years,

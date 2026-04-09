@@ -7,7 +7,7 @@ No I/O (file reading/caching) happens here.
 
 import os
 import time
-from typing import List, Tuple, Union
+from typing import Any, List, Tuple, Union
 
 import numpy as np
 import pandas as pd
@@ -138,7 +138,7 @@ class Renderer:
         staticpng: bool = True,
         staticpdf: bool = True,
         years: Union[str, None] = None,
-        interractiv: Union[bool, None] = None,
+        **kwargs: Any,
     ):
         """
         Plot interannual hydrological regime.
@@ -154,8 +154,12 @@ class Renderer:
         :param staticpdf: Whether to save static PDF file
         :param years: Year range string for filename
         """
-        if interractiv is not None:
-            interactive = interractiv
+        legacy_interactive = kwargs.pop("interractiv", None)
+        if legacy_interactive is not None:
+            interactive = legacy_interactive
+        if kwargs:
+            unexpected = ", ".join(sorted(kwargs))
+            raise TypeError(f"Unexpected keyword arguments: {unexpected}")
 
         if not staticpng and not staticpdf:
             raise ValueError(

@@ -1,3 +1,4 @@
+import numpy as np
 import pandas as pd
 import pytest
 
@@ -62,3 +63,28 @@ def test_render_simobs_interactive_requires_output_file():
             sim_obs_data=[(df, "Point A")],
             ylabel="Level",
         )
+
+
+def test_plot_hydrological_regime_accepts_legacy_interractiv_keyword(tmp_path, monkeypatch):
+    def _fail_show(self):
+        raise AssertionError("Plotly show() must not be called")
+
+    monkeypatch.setattr("plotly.graph_objects.Figure.show", _fail_show)
+
+    artefacts = Renderer.plot_hydrological_regime(
+        data=np.arange(12, dtype=float).reshape(12, 1),
+        obs_point_names=["Point A"],
+        month_labels=np.array(
+            ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
+        ),
+        var="Discharge",
+        units="m3/s",
+        savepath=str(tmp_path),
+        staticpng=False,
+        staticpdf=True,
+        years="2000_2001",
+        interractiv=True,
+    )
+
+    assert artefacts == [str(tmp_path / "Discharge_2000_2001.pdf")]
+    assert (tmp_path / "Discharge_2000_2001.pdf").exists()
