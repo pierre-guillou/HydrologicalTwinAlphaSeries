@@ -58,7 +58,7 @@ def _make_config_proj(tmp_path):
 # ---------------------------------------------------------------------------
 
 class TestStateLifecycle:
-    """Verify EMPTY → CONFIGURED → LOADED transitions."""
+    """Verify EMPTY → CONFIGURED → LOADED → READY transitions."""
 
     def test_new_twin_starts_empty(self):
         twin = HydrologicalTwin()
@@ -108,6 +108,32 @@ class TestStateLifecycle:
 
         twin.load(compartments={})
         assert twin.state == TwinState.LOADED
+
+    def test_register_compartment_after_load(self, tmp_path):
+        twin = HydrologicalTwin()
+        twin.configure(
+            config_geom=_make_config_geom(),
+            config_proj=_make_config_proj(tmp_path),
+            out_caw_directory=str(tmp_path / "out"),
+            obs_directory=str(tmp_path / "obs"),
+        )
+        twin.load(compartments={})
+
+        # register_compartment requires LOADED state
+        mock_comp = object()  # lightweight stand-in
+        twin.register_compartment(id_compartment=99, compartment=mock_comp)
+        assert 99 in twin.compartments
+        assert twin.compartments[99] is mock_comp
+
+    def test_register_compartment_before_load_raises(self, tmp_path):
+        twin = HydrologicalTwin(
+            config_geom=_make_config_geom(),
+            config_proj=_make_config_proj(tmp_path),
+            out_caw_directory=str(tmp_path / "out"),
+            obs_directory=str(tmp_path / "obs"),
+        )
+        with pytest.raises(InvalidStateError, match="LOADED"):
+            twin.register_compartment(id_compartment=1, compartment=object())
 
 
 # ---------------------------------------------------------------------------

@@ -15,26 +15,28 @@ class TwinState(enum.Enum):
 
     Allowed transitions::
 
-        EMPTY → CONFIGURED → LOADED
-                              (LOADED ≡ READY)
+        EMPTY → CONFIGURED → LOADED → READY
     """
 
     EMPTY = "EMPTY"
     CONFIGURED = "CONFIGURED"
     LOADED = "LOADED"
+    READY = "READY"
 
 
 #: Allowed forward transitions: *from_state* → set of *to_states*.
 ALLOWED_TRANSITIONS: Dict[TwinState, frozenset] = {
     TwinState.EMPTY: frozenset({TwinState.CONFIGURED}),
     TwinState.CONFIGURED: frozenset({TwinState.LOADED}),
-    TwinState.LOADED: frozenset(),  # terminal
+    TwinState.LOADED: frozenset({TwinState.READY}),
+    TwinState.READY: frozenset(),  # terminal
 }
 
 #: Minimum state required for each macro-method.
 MINIMUM_STATE: Dict[str, TwinState] = {
     "configure": TwinState.EMPTY,
     "load": TwinState.CONFIGURED,
+    "register_compartment": TwinState.LOADED,
     "describe": TwinState.LOADED,
     "extract": TwinState.LOADED,
     "transform": TwinState.LOADED,

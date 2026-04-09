@@ -41,6 +41,10 @@ class HydrologicalTwin(HTPersistenceMixin):
 
     This class is the ONLY backend entry point that the QGIS interface should use.
 
+    ``Compartment`` is the **primary domain aggregate**: all public operations
+    flow through compartments, never through low-level artifacts (meshes,
+    observations, extraction points) directly.
+
     Architecture follows the six-layer HydroTwin ontology:
         L1  Model Layer         — compartment & mesh metadata
         L2  Data Layer          — observations, simulations I/O
@@ -51,11 +55,12 @@ class HydrologicalTwin(HTPersistenceMixin):
 
     Lifecycle states::
 
-        EMPTY → CONFIGURED → LOADED
+        EMPTY → CONFIGURED → LOADED → READY
 
-    Macro-methods (public API)::
+    Macro-methods (public API, ≤ 8)::
 
-        configure, load, describe, extract, transform, render, export
+        configure, load, register_compartment, describe,
+        extract, transform, render, export
     """
 
     def __init__(
@@ -139,7 +144,7 @@ class HydrologicalTwin(HTPersistenceMixin):
         minimum = MINIMUM_STATE.get(method_name)
         if minimum is None:
             return
-        state_order = [TwinState.EMPTY, TwinState.CONFIGURED, TwinState.LOADED]
+        state_order = [TwinState.EMPTY, TwinState.CONFIGURED, TwinState.LOADED, TwinState.READY]
         if state_order.index(self._state) < state_order.index(minimum):
             raise InvalidStateError(
                 f"'{method_name}' requires state {minimum.value} or later, "
@@ -189,6 +194,26 @@ class HydrologicalTwin(HTPersistenceMixin):
         if compartments is not None:
             self.compartments = compartments
         self._transition_to(TwinState.LOADED)
+
+    def register_compartment(
+        self,
+        id_compartment: int,
+        compartment: Compartment,
+    ) -> None:
+        """Register a single compartment into the twin.
+
+        Can be called repeatedly to add compartments one at a time after
+        ``load()`` has been called.  Requires state LOADED or READY.
+
+        Parameters
+        ----------
+        id_compartment : int
+            CaWaQS compartment identifier.
+        compartment : Compartment
+            Fully constructed Compartment aggregate.
+        """
+        self._require_state("register_compartment")
+        self.compartments[id_compartment] = compartment
 
     def describe(self, **kwargs: Any) -> TwinDescription:
         """Return a structured description of the twin.

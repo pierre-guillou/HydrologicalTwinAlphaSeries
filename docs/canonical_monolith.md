@@ -2,8 +2,9 @@
 
 ## Core Invariant
 
-> HTAS exposes a single canonical object (`HydrologicalTwin`) as its public interface;
-> all internal complexity is strictly encapsulated behind this façade.
+> HTAS exposes a single canonical object (`HydrologicalTwin`) that manages a
+> structured domain composed of `Compartment` aggregates. All public operations
+> act on compartments, never on low-level artifacts directly.
 
 ---
 
@@ -16,6 +17,22 @@ from HydrologicalTwinAlphaSeries import HydrologicalTwin
 ```
 
 No other import is required for normal usage.
+
+---
+
+## Domain Model
+
+`Compartment` is the **primary domain aggregate**. All data flows through
+compartments. See `docs/domain_model.md` for the full hierarchy.
+
+```
+HydrologicalTwin
+  └── compartments : Dict[int, Compartment]
+        ├── mesh         : Mesh (1)
+        ├── observations : Observation (0..1)
+        ├── extraction   : Extraction (0..1)
+        └── timeframe    : TimeFrame (0..1)
+```
 
 ---
 
@@ -35,15 +52,16 @@ No other import is required for normal usage.
 
 The facade exposes only high-level macro-capabilities:
 
-| Method        | Purpose                                          |
-|-------------- |--------------------------------------------------|
-| `configure`   | Set project and geometry configuration           |
-| `load`        | Register compartments and mesh data              |
-| `describe`    | Inspect twin metadata and compartment info       |
-| `extract`     | Extract simulation or observation data           |
-| `transform`   | Apply temporal/spatial aggregation               |
-| `render`      | Produce visualizations (PDF, interactive plots)  |
-| `export`      | Export data to files (CSV, pickle, GeoDataFrame) |
+| Method                  | Purpose                                          |
+|------------------------ |--------------------------------------------------|
+| `configure`             | Set project and geometry configuration           |
+| `load`                  | Register compartments in bulk                    |
+| `register_compartment`  | Register a single compartment                    |
+| `describe`              | Inspect twin metadata and compartment info       |
+| `extract`               | Extract simulation or observation data           |
+| `transform`             | Apply temporal/spatial aggregation               |
+| `render`                | Produce visualizations (PDF, interactive plots)  |
+| `export`                | Export data to files (CSV, pickle, GeoDataFrame) |
 
 These methods **delegate** to `services/` and `domain/` — they contain no heavy logic.
 
@@ -54,12 +72,13 @@ These methods **delegate** to `services/` and `domain/` — they contain no heav
 `HydrologicalTwin` enforces an explicit lifecycle via an internal state machine:
 
 ```
-EMPTY → CONFIGURED → LOADED
+EMPTY → CONFIGURED → LOADED → READY
 ```
 
 - **EMPTY**: Instance created, no configuration.
 - **CONFIGURED**: Configuration attached, no data loaded.
-- **LOADED**: Compartments registered, data accessible. All operations available.
+- **LOADED**: Compartments registered, data accessible.
+- **READY**: All compartments validated, full operations available.
 
 Invalid call sequences raise `InvalidStateError`.
 
@@ -67,8 +86,9 @@ Invalid call sequences raise `InvalidStateError`.
 
 ## Rules
 
+- **Compartment is the primary aggregate.** All operations flow through compartments.
 - **domain/** holds state, no orchestration.
-- **services/** holds operations, no global state.
+- **services/** holds operations, no global state. Services accept Compartment objects.
 - **tools/** holds generic utilities with no domain meaning.
 - **ht/** holds the façade, public result types, and persistence.
 - Public API returns **structured result types** (not raw dicts or internal objects).
