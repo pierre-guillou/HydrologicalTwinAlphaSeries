@@ -1172,7 +1172,7 @@ class HydrologicalTwin(HTPersistenceMixin):
         crit_start: str = None,
         crit_end: str = None,
         aggr: Union[None, float, str] = None,
-    ) -> list[str]:
+    ) -> List[str]:
         """Read sim+obs data and render to PDF.
 
         Uses _prepare_sim_obs_data for NumPy I/O + per-point slicing,
@@ -1267,7 +1267,7 @@ class HydrologicalTwin(HTPersistenceMixin):
         critstart: str = None,
         critend: str = None,
         aggr: Union[None, float, str] = None,
-    ) -> list[str]:
+    ) -> List[str]:
         """Read sim+obs data and render interactive Plotly figure.
 
         Uses _prepare_sim_obs_data for NumPy I/O + per-point slicing,
