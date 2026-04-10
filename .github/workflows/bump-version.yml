@@ -39,13 +39,14 @@ jobs:
               Rules
               -----
               - If NN < 99: increment NN (zero-padded to 2 digits).
-              - If NN == 99: increment III and reset NN to 01.
+              - If NN == 99: increment III (zero-padded to 3 digits) and reset NN to 01.
 
               Examples
               --------
-              "0.alpha.02" -> "0.alpha.03"
-              "0.alpha.98" -> "0.alpha.99"
-              "0.alpha.99" -> "1.alpha.01"
+              "000.alpha.02" -> "000.alpha.03"
+              "000.alpha.98" -> "000.alpha.99"
+              "000.alpha.99" -> "001.alpha.01"
+              "001.alpha.99" -> "002.alpha.01"
               """
               m = re.fullmatch(r"(\d+)\.alpha\.(\d+)", version)
               if not m:
@@ -54,9 +55,9 @@ jobs:
               iii = int(m.group(1))
               nn = int(m.group(2))
               if nn < 99:
-                  return f"{iii}.alpha.{nn + 1:02d}"
+                  return f"{iii:03d}.alpha.{nn + 1:02d}"
               else:
-                  return f"{iii + 1}.alpha.01"
+                  return f"{iii + 1:03d}.alpha.01"
 
           root = Path(".")
 
