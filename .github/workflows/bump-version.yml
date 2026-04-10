@@ -1,0 +1,100 @@
+name: Bump Version
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  bump:
+    # Skip if this push was itself a version-bump commit, to avoid infinite loops.
+    if: "!startsWith(github.event.head_commit.message, 'chore: bump version')"
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          # Use a token with write access so the push back is possible.
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Bump version in pyproject.toml and pixi.toml
+        id: bump
+        run: |
+          python - <<'EOF'
+          import re
+          import sys
+          from pathlib import Path
+
+          def bump(version: str) -> str:
+              """Increment version following the III.alpha.NN scheme.
+
+              Rules
+              -----
+              - If NN < 99: increment NN (zero-padded to 2 digits).
+              - If NN == 99: increment III (zero-padded to 3 digits) and reset NN to 01.
+
+              Examples
+              --------
+              "000.alpha.02" -> "000.alpha.03"
+              "000.alpha.98" -> "000.alpha.99"
+              "000.alpha.99" -> "001.alpha.01"
+              "001.alpha.99" -> "002.alpha.01"
+              """
+              m = re.fullmatch(r"(\d+)\.alpha\.(\d+)", version)
+              if not m:
+                  print(f"ERROR: cannot parse version {version!r} (expected III.alpha.NN)", file=sys.stderr)
+                  sys.exit(1)
+              iii = int(m.group(1))
+              nn = int(m.group(2))
+              if nn < 99:
+                  return f"{iii:03d}.alpha.{nn + 1:02d}"
+              else:
+                  return f"{iii + 1:03d}.alpha.01"
+
+          root = Path(".")
+
+          # --- pyproject.toml ---
+          pyproject = root / "pyproject.toml"
+          text = pyproject.read_text()
+          m = re.search(r'^(version\s*=\s*["\'])([^"\']+)(["\'])', text, re.MULTILINE)
+          if not m:
+              print("ERROR: version field not found in pyproject.toml", file=sys.stderr)
+              sys.exit(1)
+          old_ver = m.group(2)
+          new_ver = bump(old_ver)
+          text = text[: m.start(2)] + new_ver + text[m.end(2) :]
+          pyproject.write_text(text)
+
+          # --- pixi.toml ---
+          pixi = root / "pixi.toml"
+          text2 = pixi.read_text()
+          m2 = re.search(r'^(version\s*=\s*["\'])([^"\']+)(["\'])', text2, re.MULTILINE)
+          if not m2:
+              print("ERROR: version field not found in pixi.toml", file=sys.stderr)
+              sys.exit(1)
+          text2 = text2[: m2.start(2)] + new_ver + text2[m2.end(2) :]
+          pixi.write_text(text2)
+
+          print(f"Bumped version: {old_ver} -> {new_ver}")
+          # Expose the new version to subsequent steps via $GITHUB_OUTPUT.
+          import os
+          with open(os.environ["GITHUB_OUTPUT"], "a") as fh:
+              fh.write(f"new_version={new_ver}\n")
+              fh.write(f"old_version={old_ver}\n")
+          EOF
+
+      - name: Commit and push bumped version
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add pyproject.toml pixi.toml
+          git commit -m "chore: bump version ${{ steps.bump.outputs.old_version }} -> ${{ steps.bump.outputs.new_version }}"
+          git push
