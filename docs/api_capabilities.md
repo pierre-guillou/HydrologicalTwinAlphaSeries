@@ -1,85 +1,104 @@
 # HydrologicalTwin API Capabilities
 
-This document lists the public macro-methods exposed by `HydrologicalTwin`.
+`HydrologicalTwin` exposes a macro-only public contract for external consumers.
 
-These are the **only** methods external consumers should call.
-Internal modules (`domain/`, `services/`, `config/`, `tools/`) are implementation
-details and must not be accessed directly.
+For `cawaqsviz`, the target surface is limited to:
 
-All operations act on **Compartment aggregates** — never on low-level Mesh,
-Observation, or Extraction objects directly.
+- `configure`
+- `load`
+- `describe`
+- `extract`
+- `transform`
+- `render`
+- `export`
+
+Everything else is either an internal implementation detail or a transitional
+compatibility wrapper. External code must not orchestrate `domain/`, `services/`,
+`config/`, `tools/`, nor call detailed facade helpers as its primary integration path.
+
+All operations act on compartment aggregates and structured public request or response
+types. External consumers must not construct or manipulate low-level backend objects
+such as `Compartment`, `Mesh`, `Observation`, or `Extraction` directly.
 
 ---
 
 ## Lifecycle
 
-| Method                 | Required State | Next State  | Description                              |
-|----------------------- |--------------- |------------ |------------------------------------------|
-| `configure`            | EMPTY          | CONFIGURED  | Attach project and geometry config       |
-| `load`                 | CONFIGURED     | LOADED      | Register compartments in bulk            |
-| `register_compartment` | LOADED         | (unchanged) | Register a single compartment            |
-| `describe`             | LOADED         | (unchanged) | Return twin metadata and compartment info|
-| `extract`              | LOADED         | (unchanged) | Extract simulation or observation data   |
-| `transform`            | LOADED         | (unchanged) | Temporal/spatial aggregation             |
-| `render`               | LOADED         | (unchanged) | Produce visualizations                   |
-| `export`               | LOADED         | (unchanged) | Export data to disk                      |
+| Method | Required State | Next State | Description |
+|---|---|---|---|
+| `configure` | EMPTY | CONFIGURED | Attach project and geometry configuration |
+| `load` | CONFIGURED | LOADED | Build and register project compartments |
+| `describe` | LOADED | (unchanged) | Return the frontend catalog and twin metadata |
+| `extract` | LOADED | (unchanged) | Extract workflow payloads through typed requests |
+| `transform` | LOADED | (unchanged) | Compute aggregations, criteria, budgets, regimes, runoff ratio, and AQ balances |
+| `render` | LOADED | (unchanged) | Produce final artefacts such as reports, plots, and AQ balance diagrams |
+| `export` | LOADED | (unchanged) | Export twin snapshots or derived outputs |
 
 ---
 
-## Method Intents
+## Macro Intents
 
-### `configure(**kwargs)`
-Set project-level and geometry configuration. Replaces constructor-time config.
+### `configure(request)`
+Attach project-level and geometry configuration.
 
-### `load(**kwargs)`
-Register compartments, build meshes, and attach observations.
+### `load(request)`
+Accept a public project-load request and build compartments internally.
 
-### `register_compartment(id_compartment, compartment)`
-Register a single compartment after initial `load()`.
+### `describe(request)`
+Return the frontend catalog: compartments, layers, observations, units, supported
+workflow kinds, and available outputs.
 
-### `describe(**kwargs)`
-Inspect twin metadata, list compartments, layer info, and observation info.
+### `extract(request)`
+Return workflow payloads through stable kinds. Current kinds include:
 
-### `extract(**kwargs)`
-Extract simulation matrices, observation data, or area subsets.
+- `simulation_matrix`
+- `observations`
+- `sim_obs_bundle`
+- `spatial_map`
+- `catchment_cells`
+- `aquifer_outcropping`
+- `aq_balance_inputs`
 
-### `transform(**kwargs)`
-Apply temporal aggregation (annual, monthly) or spatial averaging.
+### `transform(request)`
+Perform workflow computations. Current kinds include:
 
-### `render(**kwargs)`
-Produce file artefacts such as budget bar plots, sim-vs-obs charts, and hydrological
-regime plots without launching interactive screen views.
+- `temporal_aggregation`
+- `spatial_average`
+- `criteria`
+- `budget`
+- `hydrological_regime`
+- `runoff_ratio`
+- `aq_balance`
 
-### `export(**kwargs)`
-Export data as CSV, pickle snapshots, or GeoDataFrames.
+### `render(request)`
+Produce final artefacts. Current kinds include:
+
+- `budget_barplot`
+- `hydrological_regime`
+- `sim_obs_pdf`
+- `sim_obs_interactive`
+- `aq_flux_diagram`
+
+### `export(request)`
+Export data or snapshots. `pickle` remains the canonical persisted export format.
 
 ---
 
-## Explicit Frontend Integration Facade
+## Transitional Compatibility Layer
 
-`HydrologicalTwin.describe_api_facade()` returns an explicit description of the
-public facade for `cawaqsviz`.
+Some detailed methods still exist on the facade for migration compatibility.
+Examples include `register_compartment`, `build_watbal_spatial_gdf`,
+`build_effective_rainfall_gdf`, `build_aq_spatial_gdf`,
+`build_aquifer_outcropping`, `render_sim_obs_pdf`, and
+`render_sim_obs_interactive`.
 
-In addition to the 8 canonical macro-methods above, the same facade exposes
-integrated high-level methods that aggregate lower-level generic helpers into
-frontend-ready artefacts:
-
-| Method | Frontend intent | Aggregates |
-|---|---|---|
-| `build_watbal_spatial_gdf`     | Water-balance map layer                  | `extract_watbal_for_map` + `aggregate_for_map` |
-| `build_effective_rainfall_gdf` | Effective-rainfall map layer             | `extract_watbal_for_map` + `aggregate_for_map` |
-| `build_aq_spatial_gdf`         | Aquifer map layer                        | `extract_values` + `aggregate_for_map` |
-| `build_aquifer_outcropping`    | Aquifer outcropping / map filtering      | `Manage.Spatial.buildAqOutcropping` |
-| `render_sim_obs_pdf`           | Static sim-vs-obs report                 | `_prepare_sim_obs_data` + `Renderer.render_simobs_pdf` |
-| `render_sim_obs_interactive`   | Interactive sim-vs-obs frontend payload  | `_prepare_sim_obs_data` + `Renderer.render_simobs_interactive` |
-
-These are the integrated backend methods intended to be leveraged directly by
-the frontend once the twin is in `LOADED` state.
+These methods are not the architectural target. They are wrappers retained to
+bridge legacy callers until all frontend workflows consume only the macro methods
+listed above.
 
 ---
 
 ## Transport Layer
 
 No HTTP schema or web framework integration is defined at this stage.
-The wire protocol will be designed once the façade methods and public result types
-are stable enough to deserve exposure.
+The Python-level macro facade is the only canonical contract.

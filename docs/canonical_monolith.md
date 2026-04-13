@@ -56,14 +56,17 @@ The facade exposes only high-level macro-capabilities:
 |------------------------ |--------------------------------------------------|
 | `configure`             | Set project and geometry configuration           |
 | `load`                  | Register compartments in bulk                    |
-| `register_compartment`  | Register a single compartment                    |
-| `describe`              | Inspect twin metadata and compartment info       |
-| `extract`               | Extract simulation or observation data           |
-| `transform`             | Apply temporal/spatial aggregation               |
-| `render`                | Produce visualization file artefacts              |
+| `describe`              | Return twin metadata and the frontend catalog    |
+| `extract`               | Extract workflow payloads through typed requests |
+| `transform`             | Compute workflow transformations                 |
+| `render`                | Produce final visualization/report artefacts     |
 | `export`                | Export data to files (CSV, pickle, GeoDataFrame) |
 
 These methods **delegate** to `services/` and `domain/` — they contain no heavy logic.
+
+`register_compartment` and the detailed helper methods (`build_*`, `compute_*`,
+specialized `render_*`) may still exist as transitional wrappers, but they are not
+part of the canonical consumer contract.
 
 ---
 
@@ -93,9 +96,11 @@ Invalid call sequences raise `InvalidStateError`.
 - **services/** holds operations, no global state. Services accept Compartment objects.
 - **tools/** holds generic utilities with no domain meaning.
 - **ht/** holds the façade, public result types, and persistence.
-- Public API returns **structured result types** (not raw dicts or internal objects).
+- Public API returns **structured result types** and accepts structured public request types.
 - No direct numerical logic inside the façade.
 - No direct file I/O inside the façade (delegated to services).
+- External consumers must not build `Compartment` aggregates or call `services/` directly.
+- Frontend integration must target only `configure`, `load`, `describe`, `extract`, `transform`, `render`, and `export`.
 
 ---
 

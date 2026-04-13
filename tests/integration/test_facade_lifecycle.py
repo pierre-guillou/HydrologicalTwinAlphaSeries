@@ -9,10 +9,13 @@ import pytest
 
 from HydrologicalTwinAlphaSeries.config import ConfigGeometry, ConfigProject
 from HydrologicalTwinAlphaSeries.ht import (
+    ConfigureRequest,
+    DescribeRequest,
     ExportResult,
     FacadeDescription,
     HydrologicalTwin,
     InvalidStateError,
+    LoadRequest,
     TwinDescription,
     TwinState,
 )
@@ -78,12 +81,14 @@ class TestStateLifecycle:
     def test_load_transitions_to_loaded(self, tmp_path):
         twin = HydrologicalTwin()
         twin.configure(
-            config_geom=_make_config_geom(),
-            config_proj=_make_config_proj(tmp_path),
-            out_caw_directory=str(tmp_path / "out"),
-            obs_directory=str(tmp_path / "obs"),
+            request=ConfigureRequest(
+                config_geom=_make_config_geom(),
+                config_proj=_make_config_proj(tmp_path),
+                out_caw_directory=str(tmp_path / "out"),
+                obs_directory=str(tmp_path / "obs"),
+            )
         )
-        twin.load(compartments={})
+        twin.load(request=LoadRequest(compartments={}))
         assert twin.state == TwinState.LOADED
 
     def test_auto_configure_at_construction(self, tmp_path):
@@ -248,11 +253,14 @@ class TestMacroMethods:
 
     def test_describe_returns_twin_description(self, tmp_path):
         twin = self._make_loaded_twin(tmp_path)
-        desc = twin.describe()
+        desc = twin.describe(request=DescribeRequest())
         assert isinstance(desc, TwinDescription)
         assert desc.state == "LOADED"
         assert desc.n_compartments == 0
         assert desc.compartments == []
+        assert desc.catalog is not None
+        assert "simulation_matrix" in desc.catalog.extract_kinds
+        assert "budget_barplot" in desc.catalog.render_kinds
 
     def test_export_pickle_returns_export_result(self, tmp_path):
         twin = self._make_loaded_twin(tmp_path)
@@ -287,7 +295,7 @@ class TestMacroMethods:
 class TestFacadeDescription:
     """Verify the explicit facade description exposed to frontend consumers."""
 
-    def test_describe_api_facade_lists_macro_and_frontend_methods(self):
+    def test_describe_api_facade_lists_macro_and_transition_methods(self):
         twin = HydrologicalTwin()
 
         description = twin.describe_api_facade()
@@ -301,7 +309,6 @@ class TestFacadeDescription:
         assert macro_names == {
             "configure",
             "load",
-            "register_compartment",
             "describe",
             "extract",
             "transform",
@@ -309,14 +316,15 @@ class TestFacadeDescription:
             "export",
         }
 
-        frontend_methods = {
-            method.name: method.delegates_to for method in description.frontend_methods
+        transition_methods = {
+            method.name: method.delegates_to for method in description.transition_methods
         }
-        assert frontend_methods["build_watbal_spatial_gdf"] == [
+        assert "register_compartment" in transition_methods
+        assert transition_methods["build_watbal_spatial_gdf"] == [
             "extract_watbal_for_map",
             "aggregate_for_map",
         ]
-        assert frontend_methods["render_sim_obs_pdf"] == [
+        assert transition_methods["render_sim_obs_pdf"] == [
             "_prepare_sim_obs_data",
             "Renderer.render_simobs_pdf",
         ]
