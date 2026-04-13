@@ -105,3 +105,79 @@ HydrologicalTwinAlphaSeries is not a generic Python package.
 It is the computational foundation of a hydrological twin system, currently under active definition and validation.
 
 ---
+
+## Developer Workflow
+
+CaWaQS-ViZ (frontend, GitLab) consumes HydrologicalTwinAlphaSeries (backend, GitHub)
+as a Git submodule. Three scenarios arise depending on where changes are needed.
+
+### 1. Frontend-only changes
+
+Create a branch on the GitLab repository (CaWaQS-ViZ) and work from there.
+The submodule is not affected.
+
+### 2. Backend-only changes (no CaWaQS-ViZ testing needed)
+
+Create a branch on the GitHub repository (HydrologicalTwinAlphaSeries) and work
+from there. The frontend does not need to be updated until the work is merged.
+
+### 3. Coordinated frontend + backend changes
+
+When both sides need to evolve together — or when backend changes must be
+continuously tested through CaWaQS-ViZ — open **two branches with the same name**:
+one on GitLab (frontend) and one on GitHub (backend).
+
+#### Initial setup (once per coordinated branch)
+
+1. **In `.gitmodules`**, set the tracked branch to the shared branch name:
+
+   ```ini
+   [submodule "external/HydrologicalTwinAlphaSeries"]
+       branch = <branch-name>
+   ```
+
+2. **Pull the backend branch** into the submodule:
+
+   ```bash
+   git submodule update --remote external/HydrologicalTwinAlphaSeries
+   ```
+
+3. **Commit the pointer update** in the parent repo so GitLab records the
+   new submodule state:
+
+   ```bash
+   git add external/HydrologicalTwinAlphaSeries .gitmodules
+   git commit -m "Track backend branch <branch-name>"
+   ```
+
+#### Ongoing synchronization
+
+Every time new commits are pushed to the tracked backend branch on GitHub,
+the parent repo will show a diff on `external/HydrologicalTwinAlphaSeries`.
+To stay in sync:
+
+```bash
+git submodule update --remote external/HydrologicalTwinAlphaSeries
+git add external/HydrologicalTwinAlphaSeries
+git commit -m "Update submodule to latest <branch-name>"
+```
+
+> **Tip:** commit the pointer update frequently. It keeps the frontend
+> aligned with the latest backend and avoids large, hard-to-debug jumps.
+
+#### After the work is done
+
+When both branches are merged (backend into `main` on GitHub, frontend into
+`main` on GitLab), reset `.gitmodules` to track `main` again:
+
+```ini
+branch = main
+```
+
+### Key concepts
+
+| Term | Meaning |
+|---|---|
+| **Submodule pointer** | A commit hash stored in the parent repo. It pins the exact backend version used. It does not update automatically. |
+| `.gitmodules` `branch` field | Tells `git submodule update --remote` which remote branch to fetch. Has no effect without `--remote`. |
+| **Detached HEAD** | Normal state for a submodule — it checks out a specific commit, not a branch. |
