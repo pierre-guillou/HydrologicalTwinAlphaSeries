@@ -10,7 +10,7 @@ import numpy as np
 import pandas as pd
 
 from HydrologicalTwinAlphaSeries.config import ConfigGeometry, ConfigProject
-from HydrologicalTwinAlphaSeries.config.constants import obs_config
+from HydrologicalTwinAlphaSeries.config.constants import module_caw, obs_config, paramRecs
 from HydrologicalTwinAlphaSeries.domain.Compartment import Compartment
 from HydrologicalTwinAlphaSeries.services.Manage import Manage
 from HydrologicalTwinAlphaSeries.services.Renderer import Renderer
@@ -20,18 +20,39 @@ from HydrologicalTwinAlphaSeries.tools.spatial_utils import verify_crs_match
 from .api_types import (
     ALLOWED_TRANSITIONS,
     MINIMUM_STATE,
+    AquiferBalanceInputsResponse,
+    AquiferBalanceResponse,
+    BudgetComputationResponse,
+    CellSelectionResponse,
+    CompartmentCatalog,
     CompartmentInfo,
+    ConfigureRequest,
+    CriteriaResponse,
+    DescribeRequest,
+    ExportRequest,
     ExportResult,
+    ExtractRequest,
     ExtractValuesResponse,
     FacadeDescription,
     FacadeMethod,
+    HydrologicalRegimeResponse,
     InvalidStateError,
+    LayerCatalog,
     LayerInfo,
+    LoadRequest,
+    ObservationCatalog,
     ObservationInfo,
     ObservationsResponse,
+    RenderRequest,
     RenderResult,
+    RunoffRatioResponse,
+    SimObsBundleResponse,
+    SimObsPointData,
     SpatialAverageResponse,
+    SpatialMapResponse,
     TemporalOpResponse,
+    TransformRequest,
+    TwinCatalog,
     TwinDescription,
     TwinState,
 )
@@ -153,48 +174,307 @@ class HydrologicalTwin(HTPersistenceMixin):
                 f"but current state is {self._state.value}."
             )
 
+    @staticmethod
+    def _normalize_frequency(frequency: Optional[str], *, target: str = "short") -> str:
+        mapping = {
+            "Y": ("Y", "Annual"),
+            "Annual": ("Y", "Annual"),
+            "M": ("M", "Monthly"),
+            "Monthly": ("M", "Monthly"),
+            "D": ("D", "Daily"),
+            "Daily": ("D", "Daily"),
+        }
+        normalized = mapping.get(frequency or "Annual", ("Y", "Annual"))
+        return normalized[0] if target == "short" else normalized[1]
+
+    def _build_compartments(self, request: LoadRequest) -> Dict[int, Compartment]:
+        if request.compartments is not None:
+            return dict(request.compartments)
+        if request.geo_provider is None:
+            raise ValueError(
+                "load() requires either fully built compartments or a geo_provider."
+            )
+        if self.config_geom is None or self.config_proj is None:
+            raise InvalidStateError("load() requires configure() to be called first.")
+
+        ids_compartments = request.ids_compartments or list(self.config_geom.idCompartments)
+        return {
+            id_compartment: Compartment(
+                id_compartment=id_compartment,
+                config_geom=self.config_geom,
+                config_proj=self.config_proj,
+                out_caw_directory=self.out_caw_directory or "",
+                obs_directory=self.obs_directory or "",
+                geo_provider=request.geo_provider,
+            )
+            for id_compartment in ids_compartments
+        }
+
+    def _build_catalog(self, request: DescribeRequest) -> TwinCatalog:
+        compartments: List[CompartmentCatalog] = []
+        for comp_info in self.list_compartments():
+            layers: List[LayerCatalog] = []
+            if request.include_layers:
+                layers = [
+                    LayerCatalog(
+                        id_layer=layer_index,
+                        name=layer_name,
+                        n_cells=self.get_layer_info(comp_info.id_compartment, layer_index).n_cells,
+                        cell_id_column=(
+                            self.config_geom.idColCells.get(comp_info.id_compartment)
+                            if self.config_geom is not None
+                            else None
+                        ),
+                        crs=self.get_layer_info(comp_info.id_compartment, layer_index).crs,
+                    )
+                    for layer_index, layer_name in enumerate(comp_info.layers_gis_names)
+                ]
+
+            observations = None
+            obs_info = self.get_observation_info(comp_info.id_compartment)
+            if request.include_observations and obs_info is not None:
+                observations = ObservationCatalog(
+                    layer_name=obs_info.layer_gis_name,
+                    n_points=obs_info.n_points,
+                    point_id_column=(
+                        self.config_geom.obsIdsColNames.get(comp_info.id_compartment)
+                        if self.config_geom is not None
+                        else None
+                    ),
+                    point_name_column=(
+                        self.config_geom.obsIdsColNames.get(comp_info.id_compartment)
+                        if self.config_geom is not None
+                        else None
+                    ),
+                    point_layer_column=(
+                        self.config_geom.obsIdsColLayer.get(comp_info.id_compartment)
+                        if self.config_geom is not None
+                        else None
+                    ),
+                    point_cell_column=(
+                        self.config_geom.obsIdsColCells.get(comp_info.id_compartment)
+                        if self.config_geom is not None
+                        else None
+                    ),
+                    point_names=list(obs_info.point_names),
+                    point_ids=list(obs_info.point_ids),
+                    layer_ids=list(obs_info.layer_ids),
+                    geometries=list(obs_info.geometries),
+                )
+
+            output_parameters: Dict[str, List[str]] = {}
+            if request.include_outputs:
+                prefix = f"{comp_info.name}_"
+                output_parameters = {
+                    key.split("_", 1)[1]: list(values)
+                    for key, values in paramRecs.items()
+                    if key.startswith(prefix)
+                }
+
+            compartments.append(
+                CompartmentCatalog(
+                    id_compartment=comp_info.id_compartment,
+                    name=comp_info.name,
+                    out_caw_path=comp_info.out_caw_path,
+                    regime=comp_info.regime,
+                    primary_layer_name=(
+                        comp_info.layers_gis_names[0]
+                        if comp_info.layers_gis_names
+                        else None
+                    ),
+                    layer_cell_id_column=(
+                        self.config_geom.idColCells.get(comp_info.id_compartment)
+                        if self.config_geom is not None
+                        else None
+                    ),
+                    out_caw_directory=self.out_caw_directory,
+                    hyd_corresp_missing=self.get_compartment(comp_info.id_compartment).hyd_corresp_missing,
+                    layers=layers,
+                    observations=observations,
+                    output_parameters=output_parameters,
+                )
+            )
+
+        return TwinCatalog(
+            compartments=compartments,
+            extract_kinds=[
+                "simulation_matrix",
+                "observations",
+                "sim_obs_bundle",
+                "spatial_map",
+                "catchment_cells",
+                "aquifer_outcropping",
+                "aq_balance_inputs",
+            ],
+            transform_kinds=[
+                "temporal_aggregation",
+                "spatial_average",
+                "criteria",
+                "budget",
+                "hydrological_regime",
+                "runoff_ratio",
+                "aq_balance",
+            ],
+            render_kinds=[
+                "budget_barplot",
+                "hydrological_regime",
+                "sim_obs_pdf",
+                "sim_obs_interactive",
+                "aq_flux_diagram",
+            ],
+            export_formats=["pickle"],
+        )
+
+    @staticmethod
+    def _bundle_dict_to_response(bundle: Dict[str, Any]) -> SimObsBundleResponse:
+        obs_points = [
+            SimObsPointData(
+                name=point["name"],
+                id_cell=point["id_cell"],
+                id_layer=point["id_layer"],
+                id_point=point.get("id_point"),
+                sim=point.get("sim"),
+                obs=point.get("obs"),
+                criteria=point.get("criteria"),
+            )
+            for point in bundle.get("obs_points", [])
+        ]
+        ext_points = [
+            SimObsPointData(
+                name=point["name"],
+                id_cell=point["id_cell"],
+                id_layer=point["id_layer"],
+                sim=point.get("sim"),
+            )
+            for point in bundle.get("ext_points", [])
+        ]
+        return SimObsBundleResponse(
+            sim_dates=bundle["sim_dates"],
+            obs_dates=bundle["obs_dates"],
+            compartment_name=bundle["compartment_name"],
+            obs_points=obs_points,
+            ext_points=ext_points,
+            meta=bundle.get("meta"),
+        )
+
+    @staticmethod
+    def _bundle_response_to_dict(
+        bundle: Union[SimObsBundleResponse, Dict[str, Any]],
+    ) -> Dict[str, Any]:
+        if isinstance(bundle, dict):
+            return bundle
+        return {
+            "sim_dates": bundle.sim_dates,
+            "obs_dates": bundle.obs_dates,
+            "compartment_name": bundle.compartment_name,
+            "obs_points": [
+                {
+                    "name": point.name,
+                    "id_cell": point.id_cell,
+                    "id_layer": point.id_layer,
+                    "id_point": point.id_point,
+                    "sim": point.sim,
+                    "obs": point.obs,
+                    "criteria": point.criteria,
+                }
+                for point in bundle.obs_points
+            ],
+            "ext_points": [
+                {
+                    "name": point.name,
+                    "id_cell": point.id_cell,
+                    "id_layer": point.id_layer,
+                    "sim": point.sim,
+                }
+                for point in bundle.ext_points
+            ],
+            "meta": bundle.meta,
+        }
+
+    def _resolve_layer_infos(
+        self,
+        id_compartment: int,
+        request: ExtractRequest,
+    ) -> List[LayerInfo]:
+        if request.layers is not None:
+            return request.layers
+        if request.layer_names:
+            comp_info = self.get_compartment_info(id_compartment)
+            return [
+                self.get_layer_info(id_compartment, comp_info.layers_gis_names.index(layer_name))
+                for layer_name in request.layer_names
+            ]
+        if request.id_layer == -9999:
+            return self.get_all_layers(id_compartment)
+        return [self.get_layer_info(id_compartment, request.id_layer)]
+
+    @staticmethod
+    def _collapse_aq_series(values: np.ndarray) -> np.ndarray:
+        array = np.asarray(values, dtype=float)
+        if array.ndim <= 1:
+            return array
+        return np.nansum(array, axis=0)
+
     # ╔════════════════════════════════════════════════════════════════╗
     # ║  MACRO-METHODS — canonical public API                        ║
     # ╚════════════════════════════════════════════════════════════════╝
 
     def configure(
         self,
-        config_geom: ConfigGeometry,
-        config_proj: ConfigProject,
-        out_caw_directory: str,
-        obs_directory: str,
+        config_geom: Optional[ConfigGeometry] = None,
+        config_proj: Optional[ConfigProject] = None,
+        out_caw_directory: Optional[str] = None,
+        obs_directory: Optional[str] = None,
         temp_directory: Optional[str] = None,
+        request: Optional[ConfigureRequest] = None,
     ) -> None:
-        """Attach project and geometry configuration.
+        """Attach project and geometry configuration via the canonical macro API."""
+        if isinstance(config_geom, ConfigureRequest) and request is None:
+            request = config_geom
+            config_geom = None
 
-        Transitions: EMPTY → CONFIGURED.
-        """
+        if request is not None:
+            config_geom = request.config_geom
+            config_proj = request.config_proj
+            out_caw_directory = request.out_caw_directory
+            obs_directory = request.obs_directory
+            temp_directory = request.temp_directory
+            if request.metadata:
+                self.metadata.update(request.metadata)
+
+        if config_geom is None or config_proj is None:
+            raise ValueError("configure() requires both config_geom and config_proj.")
+
         self._require_state("configure")
         self.config_geom = config_geom
         self.config_proj = config_proj
-        self.out_caw_directory = out_caw_directory
-        self.obs_directory = obs_directory
-        self.temp_directory = temp_directory or out_caw_directory
+        self.out_caw_directory = out_caw_directory or ""
+        self.obs_directory = obs_directory or ""
+        self.temp_directory = temp_directory or self.out_caw_directory
         self._transition_to(TwinState.CONFIGURED)
 
     def load(
         self,
         compartments: Optional[Dict[int, Compartment]] = None,
+        request: Optional[LoadRequest] = None,
         **kwargs: Any,
     ) -> None:
-        """Register compartments and mesh data.
+        """Register compartments and mesh data via the canonical macro API."""
+        if isinstance(compartments, LoadRequest) and request is None:
+            request = compartments
+            compartments = None
+        if request is None:
+            request = LoadRequest(
+                compartments=compartments,
+                ids_compartments=kwargs.pop("ids_compartments", []),
+                geo_provider=kwargs.pop("geo_provider", None),
+            )
+        if kwargs:
+            unexpected = ", ".join(sorted(kwargs))
+            raise TypeError(f"Unexpected keyword arguments: {unexpected}")
 
-        Transitions: CONFIGURED → LOADED.
-
-        Parameters
-        ----------
-        compartments : dict, optional
-            ``{id_compartment: Compartment}`` mapping.  When supplied the
-            compartments are stored directly.
-        """
         self._require_state("load")
-        if compartments is not None:
-            self.compartments = compartments
+        self.compartments = self._build_compartments(request)
         self._transition_to(TwinState.LOADED)
 
     def register_compartment(
@@ -226,26 +506,29 @@ class HydrologicalTwin(HTPersistenceMixin):
             )
         self.compartments[id_compartment] = compartment
 
-    def describe(self, **kwargs: Any) -> TwinDescription:
-        """Return a structured description of the twin.
-
-        Requires state LOADED.
-        """
+    def describe(
+        self,
+        request: Optional[DescribeRequest] = None,
+        **kwargs: Any,
+    ) -> TwinDescription:
+        """Return the structured twin description and frontend catalog."""
         self._require_state("describe")
+        if request is None:
+            request = DescribeRequest(**kwargs) if kwargs else DescribeRequest()
+        elif kwargs:
+            unexpected = ", ".join(sorted(kwargs))
+            raise TypeError(f"Unexpected keyword arguments: {unexpected}")
+
         return TwinDescription(
             state=self._state.value,
             n_compartments=len(self.compartments),
             compartments=self.list_compartments(),
             metadata=self.metadata,
+            catalog=self._build_catalog(request),
         )
 
     def describe_api_facade(self) -> FacadeDescription:
-        """Describe the explicit HydrologicalTwin facade for frontend consumers.
-
-        This method documents both the canonical macro-methods and the
-        integrated high-level methods already implemented in the facade for
-        `cawaqsviz`.
-        """
+        """Describe the canonical macro facade and transitional compatibility layer."""
         return FacadeDescription(
             entrypoint="HydrologicalTwin",
             primary_consumer="cawaqsviz",
@@ -259,40 +542,44 @@ class HydrologicalTwin(HTPersistenceMixin):
                 FacadeMethod(
                     name="load",
                     level="macro",
-                    purpose="Register compartments and make the twin operational.",
-                ),
-                FacadeMethod(
-                    name="register_compartment",
-                    level="macro",
-                    purpose="Register one compartment after bulk loading.",
+                    purpose="Register a project load request and build compartments internally.",
                 ),
                 FacadeMethod(
                     name="describe",
                     level="macro",
-                    purpose="Inspect twin metadata and registered compartments.",
-                    delegates_to=["list_compartments"],
+                    purpose=(
+                        "Return the frontend catalog: compartments, layers, observations, "
+                        "outputs, and capabilities."
+                    ),
                 ),
                 FacadeMethod(
                     name="extract",
                     level="macro",
-                    purpose="Extract simulation values through a stable entry point.",
-                    delegates_to=["extract_values"],
+                    purpose=(
+                        "Extract frontend-ready workflow payloads through a stable "
+                        "entry point."
+                    ),
+                    delegates_to=["extract_values", "read_observations", "_prepare_sim_obs_data"],
                 ),
                 FacadeMethod(
                     name="transform",
                     level="macro",
-                    purpose="Apply temporal aggregation through the facade.",
-                    delegates_to=["apply_temporal_operator"],
+                    purpose=(
+                        "Apply workflow computations such as aggregations, criteria, "
+                        "budgets, runoff ratio, and aquifer balances."
+                    ),
+                    delegates_to=["apply_temporal_operator", "compute_performance_stats"],
                 ),
                 FacadeMethod(
                     name="render",
                     level="macro",
-                    purpose="Dispatch rendering requests to the appropriate renderer helper.",
+                    purpose="Produce final artefacts through a single rendering entry point.",
                     delegates_to=[
                         "render_budget_barplot",
                         "render_hydrological_regime",
                         "render_sim_obs_pdf",
                         "render_sim_obs_interactive",
+                        "render_aq_flux_diagram",
                     ],
                 ),
                 FacadeMethod(
@@ -302,41 +589,64 @@ class HydrologicalTwin(HTPersistenceMixin):
                     delegates_to=["to_pickle"],
                 ),
             ],
-            frontend_methods=[
+            transition_methods=[
+                FacadeMethod(
+                    name="register_compartment",
+                    level="transition",
+                    purpose="Legacy incremental loading helper kept for compatibility.",
+                ),
                 FacadeMethod(
                     name="build_watbal_spatial_gdf",
-                    level="frontend",
-                    purpose="Build a frontend-ready water-balance map layer.",
+                    level="transition",
+                    purpose=(
+                        "Legacy spatial workflow wrapper to be replaced by "
+                        "extract(kind='spatial_map')."
+                    ),
                     delegates_to=["extract_watbal_for_map", "aggregate_for_map"],
                 ),
                 FacadeMethod(
                     name="build_effective_rainfall_gdf",
-                    level="frontend",
-                    purpose="Build a frontend-ready effective-rainfall map layer.",
+                    level="transition",
+                    purpose=(
+                        "Legacy effective-rainfall wrapper to be replaced by "
+                        "extract(kind='spatial_map')."
+                    ),
                     delegates_to=["extract_watbal_for_map", "aggregate_for_map"],
                 ),
                 FacadeMethod(
                     name="build_aq_spatial_gdf",
-                    level="frontend",
-                    purpose="Build a frontend-ready aquifer map layer.",
+                    level="transition",
+                    purpose=(
+                        "Legacy aquifer map wrapper to be replaced by "
+                        "extract(kind='spatial_map')."
+                    ),
                     delegates_to=["extract_values", "aggregate_for_map"],
                 ),
                 FacadeMethod(
                     name="build_aquifer_outcropping",
-                    level="frontend",
-                    purpose="Compute aquifer outcropping cells for frontend map filters.",
+                    level="transition",
+                    purpose=(
+                        "Legacy outcropping helper to be replaced by "
+                        "extract(kind='aquifer_outcropping')."
+                    ),
                     delegates_to=["Manage.Spatial.buildAqOutcropping"],
                 ),
                 FacadeMethod(
                     name="render_sim_obs_pdf",
-                    level="frontend",
-                    purpose="Generate a sim-vs-obs PDF report from backend data sources.",
+                    level="transition",
+                    purpose=(
+                        "Legacy sim-vs-obs PDF helper to be replaced by "
+                        "render(kind='sim_obs_pdf')."
+                    ),
                     delegates_to=["_prepare_sim_obs_data", "Renderer.render_simobs_pdf"],
                 ),
                 FacadeMethod(
                     name="render_sim_obs_interactive",
-                    level="frontend",
-                    purpose="Generate an interactive sim-vs-obs visualization payload.",
+                    level="transition",
+                    purpose=(
+                        "Legacy sim-vs-obs interactive helper to be replaced by "
+                        "render(kind='sim_obs_interactive')."
+                    ),
                     delegates_to=[
                         "_prepare_sim_obs_data",
                         "Renderer.render_simobs_interactive",
@@ -347,90 +657,576 @@ class HydrologicalTwin(HTPersistenceMixin):
 
     def extract(
         self,
-        id_compartment: int,
-        outtype: str,
-        param: str,
-        syear: int,
-        eyear: int,
+        id_compartment: Optional[int] = None,
+        outtype: Optional[str] = None,
+        param: Optional[str] = None,
+        syear: Optional[int] = None,
+        eyear: Optional[int] = None,
+        request: Optional[ExtractRequest] = None,
+        kind: str = "simulation_matrix",
         **kwargs: Any,
-    ) -> ExtractValuesResponse:
-        """Extract simulation data (macro-method).
-
-        Delegates to :meth:`extract_values`.  Requires state LOADED.
-        """
+    ) -> Any:
+        """Extract frontend-ready workflow payloads via the canonical macro API."""
         self._require_state("extract")
-        return self.extract_values(
-            id_compartment=id_compartment,
-            outtype=outtype,
-            param=param,
-            syear=syear,
-            eyear=eyear,
-            **kwargs,
-        )
+        if isinstance(id_compartment, ExtractRequest) and request is None:
+            request = id_compartment
+            id_compartment = None
+        if request is None:
+            request = ExtractRequest(
+                kind=kind,
+                id_compartment=id_compartment,
+                outtype=outtype,
+                param=param,
+                syear=syear,
+                eyear=eyear,
+                **kwargs,
+            )
+        elif kwargs:
+            unexpected = ", ".join(sorted(kwargs))
+            raise TypeError(f"Unexpected keyword arguments: {unexpected}")
+
+        if request.kind == "simulation_matrix":
+            if request.target_unit and request.outtype == "MB":
+                return self.extract_watbal_for_map(
+                    id_compartment=request.id_compartment,
+                    outtype=request.outtype,
+                    param=request.param,
+                    syear=request.syear,
+                    eyear=request.eyear,
+                    cutsdate=request.cutsdate,
+                    cutedate=request.cutedate,
+                    id_layer=request.id_layer,
+                    target_unit=request.target_unit,
+                )
+            return self.extract_values(
+                id_compartment=request.id_compartment,
+                outtype=request.outtype,
+                param=request.param,
+                syear=request.syear,
+                eyear=request.eyear,
+                id_layer=request.id_layer,
+                cutsdate=request.cutsdate,
+                cutedate=request.cutedate,
+            )
+
+        if request.kind == "observations":
+            return self.read_observations(
+                id_compartment=request.id_compartment,
+                syear=request.syear,
+                eyear=request.eyear,
+            )
+
+        if request.kind == "sim_obs_bundle":
+            bundle = self._prepare_sim_obs_data(
+                id_compartment=request.id_compartment,
+                outtype=request.outtype,
+                param=request.param,
+                simsdate=request.syear,
+                simedate=request.eyear,
+                plotstart=request.plotstart or request.cutsdate,
+                plotend=request.plotend or request.cutedate,
+                id_layer=request.id_layer,
+                aggr=request.agg,
+                compute_criteria=request.compute_criteria,
+                criteria_metrics=request.criteria_metrics,
+                crit_start=request.crit_start,
+                crit_end=request.crit_end,
+                obs_unit=request.obs_unit,
+            )
+            bundle["meta"] = {
+                "id_compartment": request.id_compartment,
+                "outtype": request.outtype,
+                "param": request.param,
+            }
+            return self._bundle_dict_to_response(bundle)
+
+        if request.kind == "spatial_map":
+            comp_info = self.get_compartment_info(request.id_compartment)
+            frequency_label = self._normalize_frequency(request.frequency, target="long")
+
+            if comp_info.name == "WATBAL":
+                if request.param in {"eff_rain", "effective_rainfall"}:
+                    gdf = self.build_effective_rainfall_gdf(
+                        id_compartment=request.id_compartment,
+                        syear=request.syear,
+                        eyear=request.eyear,
+                        cutsdate=request.cutsdate,
+                        cutedate=request.cutedate,
+                        id_layer=request.id_layer,
+                        agg=request.agg or "mean",
+                        frequency=frequency_label,
+                        pluriannual=request.pluriannual,
+                    )
+                else:
+                    gdf = self.build_watbal_spatial_gdf(
+                        id_compartment=request.id_compartment,
+                        outtype=request.outtype or "MB",
+                        param=request.param,
+                        syear=request.syear,
+                        eyear=request.eyear,
+                        cutsdate=request.cutsdate,
+                        cutedate=request.cutedate,
+                        id_layer=request.id_layer,
+                        target_unit=request.target_unit or "mm/j",
+                        agg=request.agg or "mean",
+                        frequency=frequency_label,
+                        pluriannual=request.pluriannual,
+                    )
+            else:
+                gdf = self.build_aq_spatial_gdf(
+                    id_compartment=request.id_compartment,
+                    outtype=request.outtype,
+                    param=request.param,
+                    syear=request.syear,
+                    eyear=request.eyear,
+                    cutsdate=request.cutsdate,
+                    cutedate=request.cutedate,
+                    layers=self._resolve_layer_infos(request.id_compartment, request),
+                    agg=request.agg or "mean",
+                    frequency=frequency_label,
+                    pluriannual=request.pluriannual,
+                    layer_id_offset=request.layer_id_offset,
+                    outcropping_cell_ids=request.outcropping_cell_ids,
+                )
+
+            return SpatialMapResponse(
+                gdf=gdf,
+                meta={
+                    "id_compartment": request.id_compartment,
+                    "param": request.param,
+                    "frequency": frequency_label,
+                    "agg": request.agg,
+                },
+            )
+
+        if request.kind == "catchment_cells":
+            cell_ids = self.spatial.getCatchmentCellsIds(
+                request.obs_geometry,
+                request.network_gdf,
+                request.network_col_name_cell,
+                request.network_col_name_fnode,
+                request.network_col_name_tnode,
+            )
+            return CellSelectionResponse(
+                cell_ids=list(cell_ids),
+                meta={"id_compartment": request.id_compartment, "kind": request.kind},
+            )
+
+        if request.kind == "aquifer_outcropping":
+            cell_ids = self.build_aquifer_outcropping(
+                id_compartment=request.id_compartment,
+                save_directory=request.save_directory,
+            )
+            return CellSelectionResponse(
+                cell_ids=list(cell_ids),
+                meta={"id_compartment": request.id_compartment, "kind": request.kind},
+            )
+
+        if request.kind == "aq_balance_inputs":
+            alias_to_param = {
+                "Overflow": "surf_overflow",
+                "Riv": "flux_riv_to_aq",
+                "Dirichlet": "flux_direchlet",
+                "Neumann": "flux_neumann",
+                "Flux_bot": "flux_z_one",
+                "Flux_top": "flux_z_two",
+                "Recharge": "recharge",
+                "Uptake": "uptake",
+                "Stock": "dv_dt",
+                "Err": "err",
+            }
+            selected = request.variables or list(alias_to_param.keys())
+            data: Dict[str, np.ndarray] = {}
+            dates = None
+            for label in selected:
+                backend_param = alias_to_param.get(label, label)
+                response = self.extract_values(
+                    id_compartment=request.id_compartment,
+                    outtype=request.outtype or "MB",
+                    param=backend_param,
+                    syear=request.syear,
+                    eyear=request.eyear,
+                    id_layer=request.id_layer if request.id_layer != 0 else -9999,
+                    cutsdate=request.cutsdate,
+                    cutedate=request.cutedate,
+                )
+                data[label] = response.data
+                if dates is None:
+                    dates = response.dates
+
+            return AquiferBalanceInputsResponse(
+                data=data,
+                dates=dates,
+                meta={
+                    "id_compartment": request.id_compartment,
+                    "outtype": request.outtype or "MB",
+                    "variables": selected,
+                },
+            )
+
+        raise ValueError(f"Unknown extract kind: {request.kind!r}")
 
     def transform(
         self,
-        arr: np.ndarray,
-        dates: np.ndarray,
-        frequency: str,
+        arr: Any = None,
+        dates: Optional[np.ndarray] = None,
+        frequency: Optional[str] = None,
         agg_dimension: Union[str, float] = "mean",
+        request: Optional[TransformRequest] = None,
+        kind: str = "temporal_aggregation",
         **kwargs: Any,
-    ) -> TemporalOpResponse:
-        """Apply temporal aggregation (macro-method).
-
-        Delegates to :meth:`apply_temporal_operator`.  Requires state LOADED.
-        """
+    ) -> Any:
+        """Apply frontend-facing workflow computations via the canonical macro API."""
         self._require_state("transform")
-        return self.apply_temporal_operator(
-            arr=arr,
-            dates=dates,
-            column_names=kwargs.pop("column_names", None),
-            agg_dimension=agg_dimension,
-            frequency=frequency,
-            **kwargs,
-        )
+        if isinstance(arr, TransformRequest) and request is None:
+            request = arr
+            arr = None
+        if request is None:
+            request = TransformRequest(
+                kind=kind,
+                data=arr,
+                dates=dates,
+                frequency=frequency,
+                agg_dimension=agg_dimension,
+                **kwargs,
+            )
+        elif kwargs:
+            unexpected = ", ".join(sorted(kwargs))
+            raise TypeError(f"Unexpected keyword arguments: {unexpected}")
 
-    def render(self, kind: str = "budget", **kwargs: Any) -> RenderResult:
-        """Produce visualizations (macro-method).
+        if request.kind == "temporal_aggregation":
+            return self.apply_temporal_operator(
+                arr=request.data,
+                dates=request.dates,
+                column_names=request.column_names,
+                agg_dimension=request.agg_dimension,
+                frequency=self._normalize_frequency(request.frequency, target="long"),
+                pluriennial=request.pluriannual,
+                year_end_month=request.year_end_month,
+            )
 
-        Delegates to the appropriate render helper.  Requires state LOADED.
+        if request.kind == "spatial_average":
+            return self.apply_spatial_average(
+                id_compartment=request.id_compartment,
+                data=request.data,
+                operation=request.operation,
+                areas=request.areas,
+            )
 
-        Parameters
-        ----------
-        kind : str
-            ``"budget"`` | ``"regime"`` | ``"sim_obs_pdf"`` | ``"sim_obs_interactive"``
-        """
+        if request.kind == "criteria":
+            bundle_dict = self._bundle_response_to_dict(request.bundle or request.data)
+            metrics = request.metrics
+
+            per_point: List[Dict[str, Any]] = []
+            all_sim: List[np.ndarray] = []
+            all_obs: List[np.ndarray] = []
+            by_layer_series: Dict[int, Dict[str, List[np.ndarray]]] = {}
+
+            for point in bundle_dict.get("obs_points", []):
+                criteria = point.get("criteria")
+                if criteria is None:
+                    criteria = self.compute_performance_stats(
+                        sim=point["sim"],
+                        obs=point["obs"],
+                        metrics=metrics,
+                    )
+                per_point.append(
+                    {
+                        "name": point["name"],
+                        "id_point": point.get("id_point"),
+                        "id_layer": point["id_layer"],
+                        "criteria": criteria,
+                    }
+                )
+                all_sim.append(point["sim"])
+                all_obs.append(point["obs"])
+                by_layer_series.setdefault(point["id_layer"], {"sim": [], "obs": []})
+                by_layer_series[point["id_layer"]]["sim"].append(point["sim"])
+                by_layer_series[point["id_layer"]]["obs"].append(point["obs"])
+
+            global_metrics: Dict[str, Any] = {}
+            if all_sim and all_obs:
+                global_metrics = self.compute_performance_stats(
+                    sim=np.concatenate(all_sim),
+                    obs=np.concatenate(all_obs),
+                    metrics=metrics,
+                )
+
+            by_layer = {
+                layer_id: self.compute_performance_stats(
+                    sim=np.concatenate(series["sim"]),
+                    obs=np.concatenate(series["obs"]),
+                    metrics=metrics,
+                )
+                for layer_id, series in by_layer_series.items()
+            }
+
+            return CriteriaResponse(
+                per_point=per_point,
+                global_metrics=global_metrics,
+                by_layer=by_layer,
+                meta={"metrics": metrics},
+            )
+
+        if request.kind == "budget":
+            data = request.data
+            if data is None:
+                extracted = self.extract(
+                    request=ExtractRequest(
+                        kind="simulation_matrix",
+                        id_compartment=request.id_compartment,
+                        outtype="MB",
+                        param=request.param,
+                        syear=request.sdate,
+                        eyear=request.edate,
+                        cutsdate=request.cutsdate,
+                        cutedate=request.cutedate,
+                        id_layer=0,
+                        target_unit="mm/j",
+                    )
+                )
+                data = extracted.data
+
+            budget_data, date_labels, param_name = self.compute_budget_variable(
+                data=data,
+                param=request.param,
+                agg=request.agg_dimension,
+                fz=self._normalize_frequency(request.frequency, target="short"),
+                sdate=request.sdate,
+                edate=request.edate,
+                cutsdate=request.cutsdate,
+                cutedate=request.cutedate,
+                pluriannual=request.pluriannual,
+            )
+            return BudgetComputationResponse(
+                data=budget_data,
+                date_labels=date_labels,
+                param=param_name,
+                meta={"frequency": request.frequency, "agg": request.agg_dimension},
+            )
+
+        if request.kind == "hydrological_regime":
+            data = request.data
+            dates = request.dates
+            if data is None or dates is None:
+                extracted = self.extract(
+                    request=ExtractRequest(
+                        kind="simulation_matrix",
+                        id_compartment=request.id_compartment,
+                        outtype=request.outtype or "Q",
+                        param=request.param,
+                        syear=request.sdate,
+                        eyear=request.edate,
+                        id_layer=0,
+                    )
+                )
+                data = extracted.data
+                dates = extracted.dates
+
+            regime_data, obs_point_names, month_labels = self.compute_hydrological_regime(
+                id_compartment=request.id_compartment,
+                data=data,
+                dates=dates,
+                output_folder=self.temp_directory or self.out_caw_directory or "",
+                output_name=(
+                    f"{module_caw.get(request.id_compartment, request.id_compartment)}_regime"
+                ),
+            )
+            return HydrologicalRegimeResponse(
+                data=regime_data,
+                obs_point_names=obs_point_names,
+                month_labels=month_labels,
+                meta={"id_compartment": request.id_compartment, "param": request.param},
+            )
+
+        if request.kind == "runoff_ratio":
+            qr_sim = self.budget.calcSimRunoffRatio(
+                surf_surf_area=request.surf_area,
+                catch_surf_area=request.catch_surf_area,
+                id_surf_mesh=request.id_surf,
+                matrixRunOff=request.simmatrix_runoff,
+                matrixRain=request.simmatrix_rain,
+                matrixEtr=request.simmatrix_etr,
+            )
+            qr_obs = self.budget.calcObsRunoffRatio(
+                catch_surf_area=request.catch_surf_area,
+                id_surf_mesh=request.id_surf,
+                matrixRain=request.simmatrix_rain,
+                Obsdata=request.obs_data,
+            )
+            return RunoffRatioResponse(
+                simulated=qr_sim,
+                observed=qr_obs,
+                surface=float(sum(request.catch_surf_area or [])),
+                meta={"id_compartment": request.id_compartment},
+            )
+
+        if request.kind == "aq_balance":
+            aq_inputs = request.aq_inputs or request.data
+            if isinstance(aq_inputs, AquiferBalanceInputsResponse):
+                aq_inputs = aq_inputs.data
+            if aq_inputs is None:
+                raise ValueError("aq_balance transform requires aquifer inputs.")
+
+            normalized_series = {
+                label: self._collapse_aq_series(values)
+                for label, values in aq_inputs.items()
+            }
+            totals = {
+                label: float(np.nansum(series))
+                for label, series in normalized_series.items()
+            }
+
+            mass_balance = pd.DataFrame(
+                [
+                    {"term": label, "value": value, "absolute_value": abs(value)}
+                    for label, value in totals.items()
+                ]
+            )
+
+            flux_mapping = {
+                "Recharge": ("Surface", "Aquifer"),
+                "Riv": ("River", "Aquifer"),
+                "Dirichlet": ("Boundary", "Aquifer"),
+                "Neumann": ("Boundary", "Aquifer"),
+                "Flux_top": ("Upper layer", "Aquifer"),
+                "Flux_bot": ("Lower layer", "Aquifer"),
+                "Uptake": ("Aquifer", "Abstraction"),
+                "Overflow": ("Aquifer", "Surface"),
+                "Stock": ("Aquifer", "Storage"),
+                "Err": ("Aquifer", "Residual"),
+            }
+            flux = pd.DataFrame(
+                [
+                    {
+                        "term": label,
+                        "source": source,
+                        "target": target,
+                        "value": abs(totals[label]),
+                        "signed_value": totals[label],
+                    }
+                    for label, (source, target) in flux_mapping.items()
+                    if label in totals
+                ]
+            )
+
+            return AquiferBalanceResponse(
+                mass_balance=mass_balance,
+                flux=flux,
+                meta={"regime": request.regime or getattr(self.config_proj, "regime", None)},
+            )
+
+        raise ValueError(f"Unknown transform kind: {request.kind!r}")
+
+    def render(
+        self,
+        kind: Union[str, RenderRequest] = "budget_barplot",
+        request: Optional[RenderRequest] = None,
+        **kwargs: Any,
+    ) -> RenderResult:
+        """Produce final artefacts via the canonical macro rendering entry point."""
         self._require_state("render")
-        if kind == "budget":
-            artefacts = self.render_budget_barplot(**kwargs)
-        elif kind == "regime":
-            artefacts = self.render_hydrological_regime(**kwargs)
-        elif kind == "sim_obs_pdf":
-            artefacts = self.render_sim_obs_pdf(**kwargs)
-        elif kind == "sim_obs_interactive":
-            artefacts = self.render_sim_obs_interactive(**kwargs)
+        if isinstance(kind, RenderRequest) and request is None:
+            request = kind
+            kind = request.kind
+        data_dict = kwargs.pop("data_dict", None)
+        if request is None:
+            request = RenderRequest(kind=kind, data=kwargs.pop("data", data_dict), **kwargs)
+        elif kwargs:
+            unexpected = ", ".join(sorted(kwargs))
+            raise TypeError(f"Unexpected keyword arguments: {unexpected}")
+
+        resolved_kind = {
+            "budget": "budget_barplot",
+            "regime": "hydrological_regime",
+        }.get(request.kind, request.kind)
+
+        if resolved_kind == "budget_barplot":
+            artefacts = self.render_budget_barplot(
+                data_dict=request.data,
+                plot_title=request.plot_title,
+                output_folder=request.output_folder,
+                output_name=request.output_name,
+                yaxis_unit=request.yaxis_unit,
+            )
+        elif resolved_kind == "hydrological_regime":
+            artefacts = self.render_hydrological_regime(
+                data=request.data,
+                obs_point_names=request.obs_point_names,
+                month_labels=request.month_labels,
+                var=request.var,
+                units=request.units,
+                savepath=request.savepath,
+                interactive=request.interactive,
+                staticpng=request.staticpng,
+                staticpdf=request.staticpdf,
+                years=request.years,
+            )
+        elif resolved_kind == "sim_obs_pdf":
+            artefacts = self.render_sim_obs_pdf(
+                id_compartment=request.id_compartment,
+                outtype=request.outtype,
+                param=request.param,
+                simsdate=request.simsdate,
+                simedate=request.simedate,
+                plotstartdate=request.plotstartdate or request.plotstart,
+                plotenddate=request.plotenddate or request.plotend,
+                id_layer=request.id_layer,
+                directory=request.directory,
+                name_file=request.name_file,
+                ylabel=request.ylabel,
+                obs_unit=request.obs_unit,
+                crit_start=request.crit_start,
+                crit_end=request.crit_end,
+                aggr=request.aggr,
+            )
+        elif resolved_kind == "sim_obs_interactive":
+            artefacts = self.render_sim_obs_interactive(
+                id_compartment=request.id_compartment,
+                outtype=request.outtype,
+                param=request.param,
+                simsdate=request.simsdate,
+                simedate=request.simedate,
+                plotstart=request.plotstart,
+                plotend=request.plotend,
+                obs_unit=request.obs_unit,
+                ylabel=request.ylabel,
+                df_other_variable=request.df_other_variable,
+                other_variable_config=request.other_variable_config,
+                outFilePath=request.out_file_path,
+                critstart=request.crit_start,
+                critend=request.crit_end,
+                aggr=request.aggr,
+            )
+        elif resolved_kind == "aq_flux_diagram":
+            artefacts = self.render_aq_flux_diagram(
+                tables=request.tables,
+                output_folder=request.output_folder,
+                output_name=request.output_name,
+                colors=request.colors,
+            )
         else:
-            raise ValueError(f"Unknown render kind: {kind!r}")
-        return RenderResult(artefacts=artefacts, meta={"kind": kind})
+            raise ValueError(f"Unknown render kind: {request.kind!r}")
+        return RenderResult(artefacts=artefacts, meta={"kind": request.kind})
 
     def export(
         self,
         path: Optional[str] = None,
         fmt: str = "pickle",
+        request: Optional[ExportRequest] = None,
         **kwargs: Any,
     ) -> ExportResult:
-        """Export data or twin snapshot to disk (macro-method).
-
-        Requires state LOADED.
-
-        Parameters
-        ----------
-        path : str, optional
-            Destination file/directory path.
-        fmt : str
-            ``"pickle"`` (default) — full twin snapshot via ``to_pickle``.
-        """
+        """Export data or twin snapshot to disk via the canonical macro API."""
         self._require_state("export")
+        if isinstance(path, ExportRequest) and request is None:
+            request = path
+            path = None
+        if request is not None:
+            path = request.path
+            fmt = request.fmt
+        if kwargs:
+            unexpected = ", ".join(sorted(kwargs))
+            raise TypeError(f"Unexpected keyword arguments: {unexpected}")
         if fmt == "pickle":
             if path is None:
                 raise ValueError("'path' is required for pickle export.")
@@ -1435,6 +2231,76 @@ class HydrologicalTwin(HTPersistenceMixin):
             crit_end=critend,
             criteria_per_point=criteria_per_point,
         )
+
+    def render_aq_flux_diagram(
+        self,
+        tables: Optional[Dict[str, Any]],
+        output_folder: Optional[str],
+        output_name: Optional[str] = None,
+        colors: Optional[Dict[str, str]] = None,
+    ) -> List[str]:
+        """Render aquifer-balance artefacts from transformed workflow tables."""
+        if tables is None:
+            raise ValueError("render_aq_flux_diagram() requires transformed aquifer tables.")
+
+        output_directory = Path(
+            output_folder or self.temp_directory or self.out_caw_directory or "."
+        )
+        output_directory.mkdir(parents=True, exist_ok=True)
+        base_name = output_name or "aq_flux"
+
+        mass_balance = tables.get("mass_balance")
+        flux = tables.get("flux")
+        if mass_balance is None or flux is None:
+            raise ValueError("Aquifer render tables must contain 'mass_balance' and 'flux'.")
+
+        mass_balance_path = output_directory / f"{base_name}_mass_balance.csv"
+        flux_path = output_directory / f"{base_name}_flux.csv"
+        html_path = output_directory / f"{base_name}_diagram.html"
+
+        mass_balance.to_csv(mass_balance_path, index=False)
+        flux.to_csv(flux_path, index=False)
+
+        try:
+            import plotly.graph_objects as go
+
+            node_labels = list(dict.fromkeys(list(flux["source"]) + list(flux["target"])))
+            node_lookup = {label: index for index, label in enumerate(node_labels)}
+
+            link_colors = None
+            if colors:
+                link_colors = [colors.get(label, "#5f7d95") for label in flux["term"]]
+
+            sankey = go.Figure(
+                data=[
+                    go.Sankey(
+                        node={
+                            "label": node_labels,
+                            "pad": 18,
+                            "thickness": 18,
+                        },
+                        link={
+                            "source": [node_lookup[label] for label in flux["source"]],
+                            "target": [node_lookup[label] for label in flux["target"]],
+                            "value": flux["value"],
+                            "color": link_colors,
+                            "label": flux["term"],
+                        },
+                    )
+                ]
+            )
+            sankey.update_layout(title_text="Aquifer Flux Diagram")
+            sankey.write_html(html_path)
+        except Exception:
+            html_path.write_text(
+                (
+                    "<html><body><h1>Aquifer Flux Diagram</h1>"
+                    "<p>Plotly rendering failed.</p></body></html>"
+                ),
+                encoding="utf-8",
+            )
+
+        return [str(mass_balance_path), str(flux_path), str(html_path)]
 
     # ╔════════════════════════════════════════════════════════════════╗
     # ║  L6 — GIT-SYNCHRONIZED REGISTRY  (identity & provenance)    ║
