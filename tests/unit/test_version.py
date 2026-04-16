@@ -1,9 +1,8 @@
 """Verify that the package version is accessible and consistent."""
 
+import tomllib
 from importlib.metadata import version
 from pathlib import Path
-
-import tomllib
 
 import HydrologicalTwinAlphaSeries
 
