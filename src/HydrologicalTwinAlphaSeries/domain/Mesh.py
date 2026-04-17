@@ -5,8 +5,8 @@
 # -------------------
 # begin				: 2023
 # git sha				: $Format:%H$
-# copyright			: (C) 2023 by Lise-Marie GIROD
-# email				: lise-marie.girod@minesparis.psl.eu
+# copyright			: (C) 2023 by Nicolas Flipo and contributors
+# email				: hydrologicaltwin@minesparis.psl.eu
 # ***************************************************************************/
 #
 # /***************************************************************************

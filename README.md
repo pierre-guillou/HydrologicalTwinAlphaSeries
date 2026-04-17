@@ -91,7 +91,7 @@ When used within CaWaQS-ViZ:
 
 * Project Manager: Nicolas Flipo
 * Main Developer: Simone Mazzarelli
-* Proto implementation (CaWaQS-ViZ backend): Lise-Marie Girod
+* Contact: hydrologicaltwin@minesparis.psl.eu
 
 Contributors (ongoing):
 Tristan Bourgeois, Nicolas Gallois, Fulvia Baratelli, Pierre Guillou, Fabien Ors, Mariam Taki
