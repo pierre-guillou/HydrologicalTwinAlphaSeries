@@ -58,30 +58,35 @@ from .persistence import HTPersistenceMixin
 
 
 class HydrologicalTwin(HTPersistenceMixin):
-    """Monolithic backend facade for CaWaQS-ViZ.
-
-    This class is the ONLY backend entry point that the QGIS interface should use.
+    """HydrologicalTwin class is the main and only entry point for the hydrological twin package. It encapsulates the entire twin state and provides the canonical public API for configuration, data loading, description, extraction, transformation, rendering, and export. This Alpha Series is a first POC of a wider project that will develop private methods for :
+    extraction, git synchronisation for navigation in the space-state continuum of data, software and simulations, building and launching of CaWaQS submodels, creation of subtwins, advanced multisimulation statistics, bayesian inference, uncertainties quantification, intellectual rights and property certification.
 
     ``Compartment`` is the **primary domain aggregate**: all public operations
     flow through compartments, never through low-level artifacts (meshes,
     observations, extraction points) directly.
 
-    Architecture follows the six-layer HydroTwin ontology:
-        L1  Model Layer         — compartment & mesh metadata
-        L2  Data Layer          — observations, simulations I/O
-        L3  Estimation Layer    — comparison, filtering, Bayesian inference
-        L4  Analysis Layer      — temporal & spatial transformations, extraction
-        L5  Cartographic Layer  — visualization & spatial representation
-        L6  Git-Synchronized Registry — identity, provenance, versioning
-
+    HydrologicalTwin instances have a well-defined lifecycle, with explicit states and allowed transitions. Each macro-method checks the current state and raises :class:`InvalidStateError` if called prematurely.
     Lifecycle states::
 
         EMPTY → CONFIGURED → LOADED → READY
 
-    Macro-methods (public API, ≤ 8)::
+    Public basic services along this life cycle are configure, load, describe
 
-        configure, load, describe, extract,
+
+    Once READY HydrologicalTwin offers public services in three main categories for the Alpha Series : 
         transform, render, export
+
+    The transition between Alpha and Beta Series will consist in developping the private git-sync and extraction methods.
+
+    The transition between beta and the first complete POC of HydrologicalTwin will consist in creating private methods for subTwin instantiation, allowing it to be initialized with a CaWaQS simulation on the pure local extraction of the original Hydrological Twin in a masked domain
+
+    After first POC, the roadmap is to develop the next private methods namely for :
+    1. development of a bayesian framework for self-fitting and uncertainty quantification, with the creation of a twin manager to handle multiple twin instances in parallel and their interactions
+    2. improvment of the self_fitting procedure including frequency domain analysis in a stepwise fitting process 
+    3. development of intellectual property and rights management, with certification of the originality of twins and their components, and tracking of their evolution in the state-space continuum of data, software and simulations.
+   
+
+        
     """
 
     def __init__(
