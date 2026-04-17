@@ -132,7 +132,7 @@ class HydrologicalTwin(HTPersistenceMixin):
         # Compartments indexed by CaWaQS compartment ID (int)
         self.compartments: Dict[int, Compartment] = {}
 
-        # Domain services reusing existing logic
+        # Domain services reusing existing logic#Watch that is is a global set up that can be tuned within compartment 
         self.temporal = Manage.Temporal()
         self.spatial = Manage.Spatial()
         self.budget = Manage.Budget()
@@ -1859,7 +1859,7 @@ class HydrologicalTwin(HTPersistenceMixin):
         )
 
     # ╔════════════════════════════════════════════════════════════════╗
-    # ║  L5 — CARTOGRAPHIC LAYER  (visualization & rendering)       ║
+    # ║  Visualization & rendering                                     ║
     # ╚════════════════════════════════════════════════════════════════╝
 
     def render_budget_barplot(
@@ -2149,10 +2149,6 @@ class HydrologicalTwin(HTPersistenceMixin):
 
         return [str(mass_balance_path), str(flux_path), str(html_path)]
 
-    # ╔════════════════════════════════════════════════════════════════╗
-    # ║  L6 — GIT-SYNCHRONIZED REGISTRY  (identity & provenance)    ║
-    # ╚════════════════════════════════════════════════════════════════╝
-    # IdCard, fingerprinting, and version tracking will be added here.
 
     # ╔════════════════════════════════════════════════════════════════╗
     # ║  FRONTEND INTEGRATION FACADE                                ║
